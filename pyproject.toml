@@ -1,0 +1,17 @@
+[project]
+name = "probabilistic-ai-lab"
+version = "0.1.0"
+description = "Interactive educational web app for probabilistic AI topics"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.0",
+    "mangum>=0.17",
+]
+
+[tool.setuptools.packages.find]
+# Only include the Python backend packages; exclude the Node.js frontend directory
+include = ["modules*", "shared*"]
