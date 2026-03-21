@@ -18,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import os
 
 from shared.types import CPT
 from modules.bayesian_networks.models import ALL_MODELS
@@ -35,7 +34,7 @@ OPTIONAL_ROUTER_ERRORS: dict[str, str] = {}
 
 
 def _try_import_router(module_path: str, attr_name: str, key: str) -> Any | None:
-    """Import optional routers without crashing app startup in serverless envs."""
+    """Import optional routers without crashing app startup if one module fails."""
     try:
         module = __import__(module_path, fromlist=[attr_name])
         return getattr(module, attr_name)
@@ -64,16 +63,10 @@ from modules.bayesian_networks.solver import (
 
 app = FastAPI(title="Probabilistic AI Lab API", version="0.1.0")
 
-# CORS: allow localhost for development + Vercel domains for production
 allowed_origins = [
     "http://localhost:5173",
     "http://localhost:3000",
 ]
-
-# Add Vercel frontend domain if deploying (set VERCEL_URL env var or allow all Vercel domains)
-if os.getenv("VERCEL"):
-    # Allow all origins on Vercel (or specify your frontend domain)
-    allowed_origins = ["*"]  # Or use specific: f"https://{os.getenv('VERCEL_URL')}"
 
 app.add_middleware(
     CORSMiddleware,

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Simple API health check script
-# Usage: ./test_api.sh https://lirapai.vercel.app
+# Usage: ./test_api.sh http://localhost:8000
 
 URL="${1:-http://localhost:8000}"
 

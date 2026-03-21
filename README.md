@@ -18,14 +18,15 @@ The design philosophy is: *show the math, then let students break it interactive
 
 ## Content
 
-Four fully interactive modules, each pairing a lecture slide deck with a live tool:
+Five fully interactive modules, each pairing a lecture slide deck with a live tool:
 
 | # | Module | Key concepts |
 |---|--------|-------------|
 | 1 | **Bayesian Networks** | Conditional independence, CPTs, Variable Elimination, d-separation, sensor fusion |
-| 2 | **Bayesian Linear Regression** | Gaussian prior/posterior, epistemic vs. aleatoric uncertainty, basis functions, model evidence |
-| 3 | **Kalman Filter** | Predict–update cycle, 1D Gaussian tracking, process and observation noise |
-| 4 | **Gaussian Processes** | Kernel functions (RBF, Matérn, periodic), GP posterior, hyperparameter effects |
+| 2 | **Hidden Markov Models** | Temporal inference, filtering, Viterbi decoding, robot localization |
+| 3 | **Bayesian Linear Regression** | Gaussian prior/posterior, epistemic vs. aleatoric uncertainty, basis functions, model evidence |
+| 4 | **Kalman Filter** | Predict–update cycle, 1D Gaussian tracking, process and observation noise |
+| 5 | **Gaussian Processes** | Kernel functions (RBF, Matérn, periodic), GP posterior, hyperparameter effects |
 
 Each module includes:
 - **Overview** — plain-language description with key equations
@@ -47,6 +48,7 @@ PAI/
 ├── api.py                          # FastAPI backend (entry point)
 ├── modules/
 │   ├── bayesian_networks/          # BN inference engine + models
+│   ├── hmm/                        # HMM filtering, Viterbi, robot localization
 │   ├── bayesian_linear_regression/ # BLR posterior & evidence
 │   ├── kalman_filter/              # 1D Kalman filter simulation
 │   └── gaussian_processes/         # GP posterior with multiple kernels
@@ -81,7 +83,7 @@ The frontend dev server proxies all `/api` requests to the backend at `localhost
 
 ```bash
 git clone <repo-url>
-cd PAI
+cd cs461_pai
 ```
 
 ### 2 — Python environment
@@ -163,7 +165,7 @@ npm install -g @marp-team/marp-cli
 ### Render a single deck to PDF
 
 ```bash
-marp --pdf --allow-local-files slides/02_bayesian_linear_regression.md -o slides/pdfs/blr.pdf
+marp --pdf --allow-local-files slides/02_hidden_markov_models.md -o slides/pdfs/02_hmms.pdf
 ```
 
 ### Render all decks to PDF
@@ -225,6 +227,11 @@ The backend is configured to serve `frontend/dist` as static files and fall back
 Three robot models of increasing complexity (Robot Battery → Sensor Fusion → Mission Planning).
 Students set evidence on observed nodes and watch belief propagation update all connected variables.
 Includes a Variable Elimination solver with step-by-step derivation.
+
+### Hidden Markov Models
+Three interactive HMM examples: Weather-Mood filtering with the Forward algorithm, Viterbi decoding for most-likely state sequences, and 2D robot localization on a grid.
+Students compare sum-vs-max inference, inspect belief evolution over time, and see how motion increases uncertainty while informative observations collapse it.
+The companion lecture deck is `slides/02_hidden_markov_models.md`.
 
 ### Bayesian Linear Regression
 Click on the canvas to add observations. The posterior mean and uncertainty band update immediately.
