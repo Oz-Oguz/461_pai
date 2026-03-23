@@ -1354,29 +1354,74 @@ function BayesianFilteringTwoPhase() {
       .finally(() => setMatrixLoading(false));
   }, [showMatrix, transitionNoise, transitionModel]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT') return;
+      if (e.key === 'p' || e.key === 'P') handleTimeStep();
+      if ((e.key === 'o' || e.key === 'O') && obsPos) handleObserve();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [loading, obsPos]);
+
   const entropyNow = calcEntropy(belief);
 
-  // Compact phase strip shown above the grids
-  const PhaseStrip = () => {
-    if (phase === 'init') return (
-      <p className="text-xs text-slate-500 mb-2">
-        B(X<sub>t</sub>) — press <strong>Passage of Time</strong> to begin, or click a cell then <strong>Apply Observation</strong>.
-      </p>
-    );
+  // Info bar shown at the bottom of the central panel
+  const InfoBar = () => {
     const isTime = phase === 'after_time';
+    const isObs  = phase === 'after_obs';
+    const accentCls = isTime
+      ? 'bg-amber-50 border-amber-200 text-amber-800'
+      : isObs
+        ? 'bg-green-50 border-green-200 text-green-800'
+        : 'bg-slate-50 border-slate-200 text-slate-600';
     return (
-      <div className={`flex items-center gap-3 text-xs rounded-lg px-3 py-1.5 mb-2 border ${isTime ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-green-50 border-green-200 text-green-800'}`}>
-        <span className="font-semibold">{isTime ? '⏱ Time applied' : '👁 Observation applied'}</span>
-        {entropyBefore !== null && entropyAfter !== null && (
-          <span className="font-mono text-slate-600">
+      <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 text-xs rounded-lg px-3 py-2 mt-3 border ${accentCls}`}>
+        {/* Step counter */}
+        <span className="font-semibold text-slate-700">
+          Step <span className="font-mono">{stepCount}</span>
+        </span>
+
+        {/* Phase label */}
+        {(isTime || isObs) && (
+          <span className="font-semibold">
+            {isTime ? '⏱ Time applied' : '👁 Observation applied'}
+          </span>
+        )}
+
+        {/* Entropy change */}
+        {entropyBefore !== null && entropyAfter !== null ? (
+          <span className="font-mono">
             H: {entropyBefore.toFixed(2)} →{' '}
             <span className={isTime ? 'text-red-600 font-bold' : 'text-green-700 font-bold'}>
               {entropyAfter.toFixed(2)} {isTime ? '↑' : '↓'}
             </span>
           </span>
+        ) : (
+          <span className="font-mono text-slate-500">H: {entropyNow.toFixed(2)} bits</span>
         )}
-        {isTime && !obsPos && <span className="text-slate-500 ml-auto">← click right grid to choose observation point</span>}
-        {isTime && obsPos && <span className="text-slate-500 ml-auto">observing ({obsPos[0]},{obsPos[1]})</span>}
+
+        {/* Observation hint */}
+        {isTime && !obsPos && (
+          <span className="text-slate-500 ml-auto">← click right grid to choose observation point</span>
+        )}
+        {isTime && obsPos && (
+          <span className="text-slate-500 ml-auto">observing ({obsPos[0]},{obsPos[1]})</span>
+        )}
+        {phase === 'init' && (
+          <span className="text-slate-400 ml-auto">
+            <kbd className="px-1 py-0.5 bg-white border border-slate-300 rounded text-[10px]">P</kbd> passage of time &nbsp;·&nbsp;
+            click cell then <kbd className="px-1 py-0.5 bg-white border border-slate-300 rounded text-[10px]">O</kbd> observe
+          </span>
+        )}
+
+        {/* Entropy formula hint */}
+        <div className="w-full flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-t border-slate-200 pt-1 mt-0.5">
+          <span className="text-[10px] text-slate-400">Entropy:</span>
+          <MathBlock latex={String.raw`H = -\sum_i p(x_i)\log_2 p(x_i)`} display={false} className="text-[10px] text-slate-500" />
+          <span className="text-[10px] text-slate-400">— maximised when uniform over all {FILT_ROWS * FILT_COLS - FILT_WALLS.length} free cells:</span>
+          <MathBlock latex={`H_{\\max} = \\log_2 ${FILT_ROWS * FILT_COLS - FILT_WALLS.length} = ${Math.log2(FILT_ROWS * FILT_COLS - FILT_WALLS.length).toFixed(2)}\\text{ bits}`} display={false} className="text-[10px] text-slate-500" />
+        </div>
       </div>
     );
   };
@@ -1386,7 +1431,6 @@ function BayesianFilteringTwoPhase() {
 
       {/* ── Left: grid area ─────────────────────────────────────────── */}
       <div className="flex-1 min-w-0 bg-white rounded-xl shadow-sm p-4 border border-slate-200">
-        <PhaseStrip />
 
         {phase === 'init' && (
           <FilteringGrid belief={belief} rows={FILT_ROWS} cols={FILT_COLS} clickable={true}
@@ -1429,9 +1473,11 @@ function BayesianFilteringTwoPhase() {
             prevBelief={prevBelief}
             likelihoodMap={likelihoodMap}
             phase={phase}
+            sensorNoise={sensorNoise}
           />
         )}
 
+        <InfoBar />
       </div>
 
       {/* ── Right: controls sidebar ──────────────────────────────────── */}
@@ -1441,20 +1487,11 @@ function BayesianFilteringTwoPhase() {
         <div>
           <h2 className="text-sm font-bold text-slate-900 leading-tight">Bayesian Filtering</h2>
           <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-            Time → spreads belief (H↑) · Observe → sharpens belief (H↓)
+            Time → spreads belief (H↑)
           </p>
-        </div>
-
-        {/* Status */}
-        <div className="bg-slate-50 rounded-lg px-3 py-2 text-xs space-y-0.5">
-          <div className="flex justify-between">
-            <span className="text-slate-500">Time step</span>
-            <span className="font-mono font-bold text-slate-900">{stepCount}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-500">Entropy</span>
-            <span className="font-mono font-bold text-slate-900">{entropyNow.toFixed(2)} bits</span>
-          </div>
+          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+            Observe → sharpens belief (H↓)
+          </p>
         </div>
 
         {/* Transition model */}
@@ -1521,12 +1558,12 @@ function BayesianFilteringTwoPhase() {
           <button onClick={handleTimeStep} disabled={loading}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-500 text-white rounded-lg text-sm font-semibold hover:bg-amber-600 transition-colors disabled:opacity-50">
             {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <StepForward className="w-3.5 h-3.5" />}
-            Passage of Time
+            <span><span className="underline">P</span>assage of Time</span>
           </button>
           <button onClick={handleObserve} disabled={loading || !obsPos}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors disabled:opacity-50">
             {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eye className="w-3.5 h-3.5" />}
-            {obsPos ? `Observe (${obsPos[0]},${obsPos[1]})` : 'Apply Observation'}
+            {obsPos ? <span><span className="underline">O</span>bserve ({obsPos[0]},{obsPos[1]})</span> : <span><span className="underline">O</span>bserve</span>}
           </button>
           <button onClick={async () => { const steps = await apiSolveFiltering(); setSolverSteps(steps); }}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 bg-purple-600 text-white rounded-lg text-xs hover:bg-purple-700 transition-colors">
@@ -1562,12 +1599,14 @@ function MatrixFormView({
   prevBelief,
   likelihoodMap,
   phase,
+  sensorNoise,
 }: {
   T_data: TransitionMatrixResult;
   belief: number[][];
   prevBelief: number[][] | null;
   likelihoodMap: number[][] | null;
   phase: FilterPhase;
+  sensorNoise: number;
 }) {
   const { T, states, n } = T_data;
   const CELL = 6;    // pixels per matrix cell
@@ -1597,18 +1636,20 @@ function MatrixFormView({
   const blueAlpha = (v: number, mx: number) => `rgba(37,99,235,${(v / mx).toFixed(3)})`;
   const greenAlpha = (v: number, mx: number) => `rgba(22,163,74,${(v / mx).toFixed(3)})`;
 
-  // Render a n×1 vertical vector as SVG
+  // n×1 vector rendered as a column of colored cells with hover tooltips
   const VecSVG = ({
-    vec, mx, color, label,
-  }: { vec: number[]; mx: number; color: 'blue' | 'green'; label: string }) => (
-    <div className="flex flex-col items-center gap-1">
-      <span className="text-[9px] text-slate-500 font-mono">{label}</span>
-      <svg width={VEC_W} height={matH}>
+    vec, mx, color, label, vecRole,
+  }: { vec: number[]; mx: number; color: 'blue' | 'green'; label: string; vecRole: string }) => (
+    <div className="flex flex-col items-center gap-1 shrink-0">
+      <MathBlock latex={label} display={false} className="text-[9px] text-slate-500" />
+      <svg width={VEC_W} height={matH} className="cursor-crosshair">
         {vec.map((v, i) => (
           <rect key={i} x={0} y={i * CELL} width={VEC_W} height={CELL}
             fill={color === 'blue' ? blueAlpha(v, mx) : greenAlpha(v, mx)}
-            stroke="rgba(0,0,0,0.04)" strokeWidth={0.3}
-          />
+            stroke="rgba(0,0,0,0.06)" strokeWidth={0.3}
+          >
+            <title>{vecRole}[{i}] — cell ({states[i][0]},{states[i][1]}): {v.toFixed(5)}</title>
+          </rect>
         ))}
       </svg>
     </div>
@@ -1618,74 +1659,113 @@ function MatrixFormView({
     <span className="text-slate-400 font-mono text-sm self-center mt-4">{sym}</span>
   );
 
+  const bPrime = phase === 'after_time' ? bCurr : bPrev;   // b' after time step
+
   return (
-    <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+    <div className="mt-4 pt-4 border-t border-slate-100 space-y-2">
       <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
-        Matrix Form
+        Matrix Form — hover cells for values
       </p>
-      <p className="text-[10px] font-mono text-slate-500">
-        b_t = (1/Z_t) · O_t · T_t<sup>⊤</sup> · b_&#x7B;t-1&#x7D;
-      </p>
+      <MathBlock latex={String.raw`\mathbf{b}_t = \tfrac{1}{Z_t}\, O_t\, T_t^\top\, \mathbf{b}_{t-1}`} display={false} className="text-sm" />
 
-      {/* ── Time step: T^T × b_{t-1} = b' ── */}
-      <div>
-        <p className="text-[10px] text-amber-700 font-medium mb-1.5">
-          Passage of Time: b&#x2019; = T_t<sup>⊤</sup> · b_&#x7B;t-1&#x7D;
-        </p>
-        <div className="flex items-start gap-2 overflow-x-auto">
-          {/* T^T heatmap */}
-          <div className="flex flex-col items-center gap-1 shrink-0">
-            <span className="text-[9px] text-slate-500 font-mono">T_t<sup>⊤</sup> ({n}×{n})</span>
-            <svg width={matW} height={matH}>
-              {TT.map((row, j) =>
-                row.map((val, i) => (
-                  <rect key={`${j}-${i}`}
-                    x={i * CELL} y={j * CELL}
-                    width={CELL} height={CELL}
-                    fill={blueAlpha(val, maxT)}
-                    stroke="rgba(0,0,0,0.04)" strokeWidth={0.2}
-                  />
-                ))
-              )}
-              {/* Axis tick labels every 5 states */}
-              {Array.from({ length: Math.floor(n / 5) }, (_, k) => (
-                <text key={k} x={(k * 5) * CELL + 1} y={matH + 8}
-                  fontSize={5} fill="#94a3b8">{k * 5}</text>
-              ))}
-            </svg>
-            <p className="text-[8px] text-slate-400">col = source state i</p>
+      {/* ── Side-by-side: Time  |  Observation ── */}
+      <div className="flex gap-6 items-start overflow-x-auto pb-1">
+
+        {/* ── Passage of Time: T^T × b_{t-1} = b' ── */}
+        <div className="shrink-0">
+          <div className="text-[10px] text-amber-700 font-medium mb-1.5">
+            <MathBlock latex={String.raw`\mathbf{b}' = T_t^\top\, \mathbf{b}_{t-1}`} display={false} className="text-[10px]" />
           </div>
+          <div className="flex items-start gap-2">
+            {/* T^T heatmap */}
+            <div className="flex flex-col items-center gap-1 shrink-0">
+              <MathBlock latex={String.raw`T_t^\top\ (${n}\times${n})`} display={false} className="text-[9px] text-slate-500" />
+              <svg width={matW} height={matH} className="cursor-crosshair">
+                {TT.map((row, j) =>
+                  row.map((val, i) => (
+                    <rect key={`${j}-${i}`}
+                      x={i * CELL} y={j * CELL}
+                      width={CELL} height={CELL}
+                      fill={blueAlpha(val, maxT)}
+                      stroke="rgba(0,0,0,0.04)" strokeWidth={0.2}
+                    >
+                      <title>
+                        T⊤[{j}][{i}] = P(X′={j} | X={i}) = {val.toFixed(5)}{'\n'}
+                        source ({states[i][0]},{states[i][1]}) → dest ({states[j][0]},{states[j][1]})
+                      </title>
+                    </rect>
+                  ))
+                )}
+                {Array.from({ length: Math.floor(n / 5) }, (_, k) => (
+                  <text key={k} x={(k * 5) * CELL + 1} y={matH + 7}
+                    fontSize={5} fill="#94a3b8">{k * 5}</text>
+                ))}
+              </svg>
+              <p className="text-[8px] text-slate-400">col i = source</p>
+            </div>
 
-          <Op sym="×" />
-
-          <VecSVG vec={bPrev} mx={maxB} color="blue" label="b_{t-1}" />
-
-          <Op sym="=" />
-
-          <VecSVG vec={phase === 'after_time' ? bCurr : bPrev} mx={maxB} color="blue" label="b'" />
+            <Op sym="×" />
+            <VecSVG vec={bPrev} mx={maxB} color="blue" label={String.raw`\mathbf{b}_{t-1}`} vecRole="b_{t-1}" />
+            <Op sym="=" />
+            <VecSVG vec={bPrime} mx={maxB} color="blue" label={String.raw`\mathbf{b}'`} vecRole="b'" />
+          </div>
         </div>
+
+        {/* ── Observation: diag(O) ⊙ b' / Z = b_t ── */}
+        {oDiag && phase === 'after_obs' && (() => {
+          const sigma = 0.5 + sensorNoise * 2.5;
+          const L = (d: number) => Math.exp(-d / sigma);
+          const Z = oDiag.reduce((s, v, i) => s + v * bPrev[i], 0);
+          return (
+            <div className="flex items-start gap-4 shrink-0">
+              <div className="shrink-0">
+                <div className="text-[10px] text-green-700 font-medium mb-1.5">
+                  <MathBlock latex={String.raw`\mathbf{b}_t \propto \mathrm{diag}(O_t) \odot \mathbf{b}'`} display={false} className="text-[10px]" />
+                </div>
+                <div className="flex items-start gap-2">
+                  <VecSVG vec={oDiag} mx={maxO} color="green" label={String.raw`\mathrm{diag}(O_t)`} vecRole="O_t[diag]" />
+                  <Op sym="⊙" />
+                  <VecSVG vec={bPrev} mx={maxB} color="blue" label={String.raw`\mathbf{b}'`} vecRole="b'" />
+                  <div className="flex flex-col items-center self-center mt-4 gap-1">
+                    <span className="text-slate-400 font-mono text-sm">/ Z =</span>
+                    <MathBlock latex={`Z = \\sum_i O_t[i,i]\\cdot b'_i`} display={false} className="text-[9px]" />
+                    <span className="text-[9px] font-mono text-slate-500 bg-slate-100 rounded px-1">= {Z.toFixed(4)}</span>
+                  </div>
+                  <VecSVG vec={bCurr} mx={maxB} color="blue" label={String.raw`\mathbf{b}_t`} vecRole="b_t" />
+                </div>
+              </div>
+              {/* Sensor model explanation */}
+              <div className="shrink-0 rounded bg-slate-50 border border-slate-200 px-2 py-1.5 space-y-1 self-center">
+                <MathBlock latex={String.raw`O_t[i,i] = P(e \mid \text{cell}_i) \propto e^{-d_M/\sigma}`} display={false} className="text-[9px]" />
+                <MathBlock latex={`\\sigma = 0.5 + ${sensorNoise.toFixed(2)} \\times 2.5 = ${sigma.toFixed(2)}`} display={false} className="text-[9px]" />
+                <table className="text-[10px] text-slate-600 w-full">
+                  <thead>
+                    <tr className="text-slate-400">
+                      <th className="text-left font-normal">d</th>
+                      <th className="text-right font-normal">P(e|cell)</th>
+                      <th className="text-right font-normal pr-1">weight</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[0, 1, 2, 3].map(d => (
+                      <tr key={d} className={d === 0 ? 'text-green-700 font-semibold' : ''}>
+                        <td>{d}</td>
+                        <td className="text-right font-mono">{L(d).toFixed(3)}</td>
+                        <td className="text-right pr-1">
+                          <span className="inline-block bg-green-200 rounded-sm" style={{ width: `${Math.round(L(d) * 28)}px`, height: '6px', verticalAlign: 'middle' }} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
-      {/* ── Observation: O ⊙ b' / Z = b_t ── */}
-      {oDiag && phase === 'after_obs' && (
-        <div>
-          <p className="text-[10px] text-green-700 font-medium mb-1.5">
-            Observation: b_t ∝ diag(O_t) ⊙ b&#x2019;
-          </p>
-          <div className="flex items-start gap-2 overflow-x-auto">
-            <VecSVG vec={oDiag} mx={maxO} color="green" label="diag(O_t)" />
-            <Op sym="⊙" />
-            <VecSVG vec={bPrev} mx={maxB} color="blue" label="b'" />
-            <Op sym="/ Z =" />
-            <VecSVG vec={bCurr} mx={maxB} color="blue" label="b_t" />
-          </div>
-        </div>
-      )}
-
-      {/* State index legend */}
-      <p className="text-[9px] text-slate-400 leading-relaxed">
-        States indexed row-major: state 0 = cell (0,0), state {n-1} = cell ({states[n-1][0]},{states[n-1][1]}).
-        Each row of T^⊤ shows where probability flows <em>into</em> that state.
+      <p className="text-[9px] text-slate-400">
+        State 0 = cell (0,0) · state {n-1} = cell ({states[n-1][0]},{states[n-1][1]}) · row-major order
       </p>
     </div>
   );

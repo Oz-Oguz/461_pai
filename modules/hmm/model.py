@@ -581,10 +581,12 @@ def bayesian_filtering_time_step(
             preferred = pref.get((r, c))
 
             if preferred is None:
-                # Uniform: spread equally
-                predicted[r, c] += b * transition_noise
+                # Uniform: robot picks one of 4 directions at random (with 1-noise);
+                # blocked directions (walls/boundary) fold back into staying put.
+                blocked = 4 - len(free_nbrs)
+                predicted[r, c] += b * (transition_noise + blocked * (1 - transition_noise) / 4)
                 for nr, nc in free_nbrs:
-                    predicted[nr, nc] += b * (1 - transition_noise) / len(free_nbrs)
+                    predicted[nr, nc] += b * (1 - transition_noise) / 4
             else:
                 pr, pc = r + preferred[0], c + preferred[1]
                 if (pr, pc) in wall_set or pr < 0 or pr >= rows or pc < 0 or pc >= cols:
@@ -675,9 +677,12 @@ def build_transition_matrix(
         preferred = pref.get((r, c))
 
         if preferred is None:          # uniform model
-            T[i][i] += transition_noise
+            # Robot picks one of 4 directions at random (with 1-noise);
+            # blocked directions (walls/boundary) fold back into staying put.
+            blocked = 4 - len(free_nbrs)
+            T[i][i] += transition_noise + blocked * (1 - transition_noise) / 4
             for nr, nc in free_nbrs:
-                T[i][cell_to_idx[(nr, nc)]] += (1 - transition_noise) / len(free_nbrs)
+                T[i][cell_to_idx[(nr, nc)]] += (1 - transition_noise) / 4
         else:
             pr, pc = r + preferred[0], c + preferred[1]
             if (pr, pc) in wall_set or not (0 <= pr < rows and 0 <= pc < cols):
