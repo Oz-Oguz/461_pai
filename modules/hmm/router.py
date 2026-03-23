@@ -13,6 +13,10 @@ from modules.hmm.model import (
     initialize_robot_belief,
     solver_steps_forward,
     solver_steps_viterbi,
+    bayesian_filtering_time_step,
+    bayesian_filtering_observe_step,
+    solver_steps_filtering,
+    build_transition_matrix,
 )
 
 router = APIRouter(prefix="/api/hmm", tags=["Hidden Markov Models"])
@@ -47,8 +51,9 @@ class RobotStepRequest(BaseModel):
     grid_size: tuple[int, int]
     walls: list[tuple[int, int]]
     action: str | None = None
-    observation: dict[str, bool] | None = None
+    observation: dict | None = None
     action_noise: float = 0.1
+    sensor_noise: float = 0.2
 
 
 class RobotInitRequest(BaseModel):
@@ -56,6 +61,29 @@ class RobotInitRequest(BaseModel):
     walls: list[tuple[int, int]]
     uniform: bool = True
     position: tuple[int, int] | None = None
+
+
+class FilteringTimeRequest(BaseModel):
+    belief: list[list[float]]
+    grid_size: tuple[int, int]
+    walls: list[tuple[int, int]]
+    transition_noise: float = 0.2
+    transition_model: str = 'uniform'
+
+
+class FilteringObserveRequest(BaseModel):
+    belief: list[list[float]]
+    grid_size: tuple[int, int]
+    walls: list[tuple[int, int]]
+    observation: tuple[int, int]  # (row, col) of sensed position
+    sensor_noise: float = 0.3
+
+
+class TransitionMatrixRequest(BaseModel):
+    grid_size: tuple[int, int]
+    walls: list[tuple[int, int]]
+    transition_noise: float = 0.2
+    transition_model: str = 'uniform'
 
 
 class SolveStep(BaseModel):
@@ -125,7 +153,54 @@ def robot_step(req: RobotStepRequest) -> dict:
         action=req.action,
         observation=req.observation,
         action_noise=req.action_noise,
+        sensor_noise=req.sensor_noise,
     )
+
+
+@router.post("/filtering/time")
+def filtering_time(req: FilteringTimeRequest) -> dict:
+    """Apply the Passage-of-Time phase: B'(X') = Σ P(X'|x) B(x)."""
+    import numpy as np
+    belief = np.array(req.belief)
+    return bayesian_filtering_time_step(
+        belief=belief,
+        grid_size=req.grid_size,
+        walls=req.walls,
+        transition_noise=req.transition_noise,
+        transition_model=req.transition_model,
+    )
+
+
+@router.post("/filtering/observe")
+def filtering_observe(req: FilteringObserveRequest) -> dict:
+    """Apply the Observation phase: B(X) ∝ P(e|X) B'(X)."""
+    import numpy as np
+    belief = np.array(req.belief)
+    return bayesian_filtering_observe_step(
+        belief=belief,
+        grid_size=req.grid_size,
+        walls=req.walls,
+        observation=req.observation,
+        sensor_noise=req.sensor_noise,
+    )
+
+
+@router.post("/filtering/transition-matrix")
+def filtering_transition_matrix(req: TransitionMatrixRequest) -> dict:
+    """Return transition matrix T[i][j]=P(X'=j|X=i) over free cells."""
+    return build_transition_matrix(
+        grid_size=req.grid_size,
+        walls=req.walls,
+        transition_noise=req.transition_noise,
+        transition_model=req.transition_model,
+    )
+
+
+@router.get("/solve/filtering", response_model=list[SolveStep])
+def solve_filtering() -> list[SolveStep]:
+    """Return step-by-step derivation of Bayesian Filtering (two-phase view)."""
+    steps = solver_steps_filtering()
+    return [SolveStep(**s) for s in steps]
 
 
 @router.get("/solve/forward", response_model=list[SolveStep])

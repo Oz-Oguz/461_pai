@@ -241,8 +241,9 @@ def robot_localization_step(
     grid_size: tuple[int, int],
     walls: list[tuple[int, int]],
     action: Literal["move_up", "move_down", "move_left", "move_right"] | None = None,
-    observation: dict[str, bool] | None = None,
+    observation: dict | None = None,
     action_noise: float = 0.1,
+    sensor_noise: float = 0.2,
 ) -> dict:
     """
     Perform one step of robot localization (either prediction or update).
@@ -307,43 +308,51 @@ def robot_localization_step(
     elif observation is not None:
         # Update step: apply sensor model
         step_type = "update"
-        
-        # Generate likelihood for each cell based on wall observations
-        likelihood = np.ones_like(belief)
-        
+        likelihood = np.zeros_like(belief)
+
+        # ── UCB directional sensor model ─────────────────────────────────
+        # Sensor reports 4 bits: N/S/E/W wall-or-not.  At most 1 bit wrong.
+        #   P(e | X)  =  1 - sensor_noise   if hamming(e, true) == 0
+        #             =  sensor_noise / 4   if hamming(e, true) == 1
+        #             =  0                  if hamming(e, true) >= 2
+        obs_n = bool(observation.get("N", False))
+        obs_s = bool(observation.get("S", False))
+        obs_e = bool(observation.get("E", False))
+        obs_w = bool(observation.get("W", False))
+
         for r in range(rows):
             for c in range(cols):
                 if (r, c) in walls:
-                    likelihood[r, c] = 0
                     continue
-                
-                # Check if walls are adjacent
-                has_wall = {
-                    "north": (r - 1, c) in walls or r == 0,
-                    "south": (r + 1, c) in walls or r == rows - 1,
-                    "east": (r, c + 1) in walls or c == cols - 1,
-                    "west": (r, c - 1) in walls or c == 0,
-                }
-                
-                # Compute likelihood based on sensor readings
-                sensor_accuracy = 0.9
-                cell_likelihood = 1.0
-                for direction, sensed in observation.items():
-                    if has_wall[direction] == sensed:
-                        cell_likelihood *= sensor_accuracy
-                    else:
-                        cell_likelihood *= (1 - sensor_accuracy)
-                
-                likelihood[r, c] = cell_likelihood
-        
+                true_n = (r - 1, c) in walls or r == 0
+                true_s = (r + 1, c) in walls or r == rows - 1
+                true_e = (r, c + 1) in walls or c == cols - 1
+                true_w = (r, c - 1) in walls or c == 0
+                hamming = sum([
+                    obs_n != true_n,
+                    obs_s != true_s,
+                    obs_e != true_e,
+                    obs_w != true_w,
+                ])
+                if hamming == 0:
+                    likelihood[r, c] = 1.0 - sensor_noise
+                elif hamming == 1:
+                    likelihood[r, c] = sensor_noise / 4.0
+                # hamming >= 2 → likelihood stays 0
+
+        details_extra = {
+            "observation": {"N": obs_n, "S": obs_s, "E": obs_e, "W": obs_w},
+            "sensor_noise": sensor_noise,
+        }
+
         # Multiply belief by likelihood and normalize
         new_belief = belief * likelihood
         evidence = new_belief.sum()
         if evidence > 0:
             new_belief /= evidence
-        
+
         details = {
-            "observation": observation,
+            **details_extra,
             "entropy_before": float(_entropy(belief)),
             "entropy_after": float(_entropy(new_belief)),
             "information_gain": float(_entropy(belief) - _entropy(new_belief)),
@@ -427,6 +436,392 @@ def solver_steps_forward() -> list[dict]:
             "title": "Evidence (Likelihood)",
             "text": "The normalization constant at each step is the likelihood of the new observation given past evidence. Multiplying these gives the total likelihood P(e_{1:T}).",
             "latex": "P(e_{1:T}) = \\prod_{t=1}^T P(e_t | e_{1:t-1})",
+        },
+    ]
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Example 4: Bayesian Filtering — Two-Phase (Passage of Time + Observation)
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Transition model helpers ──────────────────────────────────────────
+
+def _generate_spiral_order(rows: int, cols: int, wall_set: set) -> list[tuple[int, int]]:
+    """Clockwise inward spiral traversal, skipping walls."""
+    order: list[tuple[int, int]] = []
+    top, bottom, left, right = 0, rows - 1, 0, cols - 1
+    while top <= bottom and left <= right:
+        for c in range(left, right + 1):
+            if (top, c) not in wall_set:
+                order.append((top, c))
+        top += 1
+        for r in range(top, bottom + 1):
+            if (r, right) not in wall_set:
+                order.append((r, right))
+        right -= 1
+        if top <= bottom:
+            for c in range(right, left - 1, -1):
+                if (bottom, c) not in wall_set:
+                    order.append((bottom, c))
+            bottom -= 1
+        if left <= right:
+            for r in range(bottom, top - 1, -1):
+                if (r, left) not in wall_set:
+                    order.append((r, left))
+            left += 1
+    return order
+
+
+def _clockwise_dir(r: int, c: int, rows: int, cols: int) -> tuple[int, int]:
+    """Preferred clockwise direction for (r, c) within its concentric ring."""
+    k = min(r, c, rows - 1 - r, cols - 1 - c)
+    if r == k and c < cols - 1 - k:          # top side → right
+        return (0, 1)
+    elif c == cols - 1 - k and r < rows - 1 - k:  # right side → down
+        return (1, 0)
+    elif r == rows - 1 - k and c > k:        # bottom side → left
+        return (0, -1)
+    elif c == k and r > k:                   # left side → up
+        return (-1, 0)
+    return (0, 1)                            # fallback (single-cell ring)
+
+
+def _build_preferred_dirs(
+    rows: int, cols: int, wall_set: set, model: str
+) -> dict[tuple[int, int], tuple[int, int] | None]:
+    """
+    Return preferred next-direction for every free cell.
+
+    None  → spread uniformly (no preference).
+    (dr, dc) → move in that direction with probability (1-noise), spread
+               noise evenly over remaining free neighbours.
+
+    Models
+    ------
+    'uniform'   – spread uniformly (no preferred direction).
+    'clockwise' – each concentric ring rotates clockwise independently.
+    'vortex'    – full inward spiral; cells on the same ring move to the
+                  NEXT inner ring at the spiral's "corner" transitions.
+                  The innermost ring falls back to clockwise rotation.
+    """
+    free = {(r, c) for r in range(rows) for c in range(cols) if (r, c) not in wall_set}
+    pref: dict[tuple[int, int], tuple[int, int] | None] = {}
+
+    if model == 'uniform':
+        return {cell: None for cell in free}
+
+    if model == 'clockwise':
+        for r, c in free:
+            pref[(r, c)] = _clockwise_dir(r, c, rows, cols)
+        return pref
+
+    if model == 'vortex':
+        spiral = _generate_spiral_order(rows, cols, wall_set)
+        for i, cell in enumerate(spiral):
+            next_cell = spiral[(i + 1) % len(spiral)]
+            dr = next_cell[0] - cell[0]
+            dc = next_cell[1] - cell[1]
+            if abs(dr) + abs(dc) == 1:          # adjacent → use it
+                pref[cell] = (dr, dc)
+            else:                                # wrap-around: fall back to clockwise
+                r, c = cell
+                pref[cell] = _clockwise_dir(r, c, rows, cols)
+        # Fill any free cells missed by the spiral (e.g. isolated wall pockets)
+        for cell in free:
+            if cell not in pref:
+                pref[cell] = None
+        return pref
+
+    return {cell: None for cell in free}
+
+
+def bayesian_filtering_time_step(
+    belief: np.ndarray,
+    grid_size: tuple[int, int],
+    walls: list[tuple[int, int]],
+    transition_noise: float = 0.2,
+    transition_model: str = 'uniform',
+) -> dict:
+    """
+    Apply the Passage-of-Time phase of Bayesian Filtering.
+
+    B'(X_{t+1}) = Σ_{x_t} P(X_{t+1} | x_t) · B(x_t)
+
+    transition_model options:
+        'uniform'   – spread to all free neighbours equally.
+        'clockwise' – each concentric ring rotates clockwise.
+        'vortex'    – full inward clockwise spiral (ghost whirlpool).
+
+    Returns:
+        belief_after, entropy_before, entropy_after, latex
+    """
+    rows, cols = grid_size
+    wall_set = set(map(tuple, walls))
+    pref = _build_preferred_dirs(rows, cols, wall_set, transition_model)
+    predicted = np.zeros_like(belief)
+    adjacents = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    for r in range(rows):
+        for c in range(cols):
+            if (r, c) in wall_set or belief[r, c] < 1e-12:
+                continue
+            b = belief[r, c]
+
+            free_nbrs = [
+                (r + dr, c + dc)
+                for dr, dc in adjacents
+                if 0 <= r + dr < rows and 0 <= c + dc < cols
+                and (r + dr, c + dc) not in wall_set
+            ]
+
+            if not free_nbrs:
+                predicted[r, c] += b
+                continue
+
+            preferred = pref.get((r, c))
+
+            if preferred is None:
+                # Uniform: spread equally
+                predicted[r, c] += b * transition_noise
+                for nr, nc in free_nbrs:
+                    predicted[nr, nc] += b * (1 - transition_noise) / len(free_nbrs)
+            else:
+                pr, pc = r + preferred[0], c + preferred[1]
+                if (pr, pc) in wall_set or pr < 0 or pr >= rows or pc < 0 or pc >= cols:
+                    # Preferred direction blocked: fall back to uniform
+                    predicted[r, c] += b * transition_noise
+                    for nr, nc in free_nbrs:
+                        predicted[nr, nc] += b * (1 - transition_noise) / len(free_nbrs)
+                else:
+                    # Move to preferred neighbour with (1-noise), noise to others
+                    predicted[pr, pc] += b * (1 - transition_noise)
+                    other_nbrs = [n for n in free_nbrs if n != (pr, pc)]
+                    if other_nbrs:
+                        for nr, nc in other_nbrs:
+                            predicted[nr, nc] += b * transition_noise / len(other_nbrs)
+                    else:
+                        predicted[pr, pc] += b * transition_noise  # stay if no alternatives
+
+    total = predicted.sum()
+    if total > 0:
+        predicted /= total
+
+    entropy_before = _entropy(belief)
+    entropy_after = _entropy(predicted)
+
+    model_desc = {
+        'uniform':   'uniform spread to free neighbours',
+        'clockwise': 'clockwise rotation within each concentric ring',
+        'vortex':    'inward clockwise spiral (vortex)',
+    }.get(transition_model, transition_model)
+
+    latex = (
+        "B'(X_{t+1}) = \\sum_{x_t} P(X_{t+1} | x_t)\\, B(x_t)"
+        "\\\\"
+        f"\\text{{Model: {model_desc}}}"
+        "\\\\"
+        f"\\text{{Noise: }} \\epsilon = {transition_noise:.2f}"
+        "\\\\"
+        f"H(B) = {entropy_before:.3f} \\to H(B') = {entropy_after:.3f} \\text{{ bits}}"
+    )
+
+    return {
+        "belief_after": predicted.tolist(),
+        "entropy_before": float(entropy_before),
+        "entropy_after": float(entropy_after),
+        "latex": latex,
+    }
+
+
+def build_transition_matrix(
+    grid_size: tuple[int, int],
+    walls: list[tuple[int, int]],
+    transition_noise: float = 0.2,
+    transition_model: str = 'uniform',
+) -> dict:
+    """
+    Build the n×n row-stochastic transition matrix T where
+    T[i][j] = P(X_{t+1}=j | X_t=i), indexed over free cells in row-major order.
+
+    Returns:
+        T       – n×n list-of-lists
+        states  – [[r,c], ...] mapping linear index → grid cell
+        n       – number of free cells
+    """
+    rows, cols = grid_size
+    wall_set = set(map(tuple, walls))
+    pref = _build_preferred_dirs(rows, cols, wall_set, transition_model)
+
+    free_cells = [(r, c) for r in range(rows) for c in range(cols)
+                  if (r, c) not in wall_set]
+    n = len(free_cells)
+    cell_to_idx = {cell: idx for idx, cell in enumerate(free_cells)}
+
+    T = np.zeros((n, n))
+    adjacents = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    for r, c in free_cells:
+        i = cell_to_idx[(r, c)]
+        free_nbrs = [
+            (r + dr, c + dc)
+            for dr, dc in adjacents
+            if 0 <= r + dr < rows and 0 <= c + dc < cols
+            and (r + dr, c + dc) not in wall_set
+        ]
+        if not free_nbrs:
+            T[i][i] = 1.0
+            continue
+
+        preferred = pref.get((r, c))
+
+        if preferred is None:          # uniform model
+            T[i][i] += transition_noise
+            for nr, nc in free_nbrs:
+                T[i][cell_to_idx[(nr, nc)]] += (1 - transition_noise) / len(free_nbrs)
+        else:
+            pr, pc = r + preferred[0], c + preferred[1]
+            if (pr, pc) in wall_set or not (0 <= pr < rows and 0 <= pc < cols):
+                # preferred direction blocked → uniform fallback
+                T[i][i] += transition_noise
+                for nr, nc in free_nbrs:
+                    T[i][cell_to_idx[(nr, nc)]] += (1 - transition_noise) / len(free_nbrs)
+            else:
+                pj = cell_to_idx[(pr, pc)]
+                T[i][pj] += (1 - transition_noise)
+                other_nbrs = [nb for nb in free_nbrs if nb != (pr, pc)]
+                if other_nbrs:
+                    for nr, nc in other_nbrs:
+                        T[i][cell_to_idx[(nr, nc)]] += transition_noise / len(other_nbrs)
+                else:
+                    T[i][pj] += transition_noise   # no alternatives
+
+    return {
+        "T": T.tolist(),
+        "states": [[r, c] for r, c in free_cells],
+        "n": n,
+    }
+
+
+def bayesian_filtering_observe_step(
+    belief: np.ndarray,
+    grid_size: tuple[int, int],
+    walls: list[tuple[int, int]],
+    observation: tuple[int, int],
+    sensor_noise: float = 0.3,
+) -> dict:
+    """
+    Apply the Observation phase of Bayesian Filtering.
+
+    B(X_{t+1}) ∝ P(e_{t+1} | X_{t+1}) · B'(X_{t+1})
+
+    Sensor model: Gaussian likelihood centered at the observed cell.
+        P(e | X=(r,c)) ∝ exp(-manhattan_dist(X, obs) / sigma)
+    where sigma = 0.5 + sensor_noise * 2.5 (sensor_noise ∈ [0,1]).
+
+    Returns:
+        belief_after, likelihood_map, entropy_before, entropy_after, latex
+    """
+    rows, cols = grid_size
+    wall_set = set(map(tuple, walls))
+    r_obs, c_obs = observation
+
+    sigma = 0.5 + sensor_noise * 2.5
+
+    # Build likelihood map
+    likelihood = np.zeros((rows, cols))
+    for r in range(rows):
+        for c in range(cols):
+            if (r, c) in wall_set:
+                continue
+            dist = abs(r - r_obs) + abs(c - c_obs)
+            likelihood[r, c] = np.exp(-dist / sigma)
+
+    # Unnormalised posterior
+    updated = belief * likelihood
+    evidence = updated.sum()
+    if evidence > 0:
+        updated /= evidence
+
+    entropy_before = _entropy(belief)
+    entropy_after = _entropy(updated)
+
+    latex = (
+        f"B(X_{{t+1}}) \\propto P(e_{{t+1}} | X_{{t+1}}) \\cdot B'(X_{{t+1}})"
+        "\\\\"
+        f"\\text{{Observed position: }}({r_obs}, {c_obs})"
+        "\\\\"
+        f"P(e | X) \\propto \\exp\\!\\left(-\\frac{{d_{{\\text{{Manhattan}}}}}}{{\\sigma}}\\right),"
+        f"\\quad \\sigma = {sigma:.2f}"
+        "\\\\"
+        f"H(B') = {entropy_before:.3f} \\to H(B) = {entropy_after:.3f} \\text{{ bits}}"
+    )
+
+    return {
+        "belief_after": updated.tolist(),
+        "likelihood_map": likelihood.tolist(),
+        "entropy_before": float(entropy_before),
+        "entropy_after": float(entropy_after),
+        "latex": latex,
+    }
+
+
+def solver_steps_filtering() -> list[dict]:
+    """Step-by-step derivation of Bayesian Filtering (two-phase view)."""
+    return [
+        {
+            "title": "Base Case: Observation",
+            "text": (
+                "At time t=1, we can compute the posterior over X₁ given the first "
+                "observation e₁ using Bayes' rule. The prior B(X₁) = P(X₁) is "
+                "reweighted by the likelihood P(e₁|X₁) and renormalised."
+            ),
+            "latex": (
+                "P(X_1 | e_1) = P(X_1,\\, e_1) / P(e_1)"
+                "\\\\[4pt]"
+                "\\propto_{X_1}\\, P(X_1)\\, P(e_1 | X_1)"
+            ),
+        },
+        {
+            "title": "Base Case: Passage of Time",
+            "text": (
+                "To predict X₂ before seeing any new evidence, we marginalise out X₁ "
+                "using the transition model. The belief 'spreads' through the "
+                "transition — uncertainty accumulates."
+            ),
+            "latex": (
+                "P(X_2) = \\sum_{x_1} P(X_2,\\, x_1)"
+                "\\\\[4pt]"
+                "= \\sum_{x_1} P(X_2 | x_1)\\, P(x_1)"
+            ),
+        },
+        {
+            "title": "Passage of Time (General)",
+            "text": (
+                "Given the current filtered belief B(Xₜ) = P(Xₜ | e₁..ₜ), "
+                "one time step later (before the next observation) we obtain the "
+                "predicted belief B'(Xₜ₊₁). Beliefs are pushed through the transition; "
+                "entropy increases."
+            ),
+            "latex": (
+                "B'(X_{t+1}) = \\sum_{x_t} P(X_{t+1} | x_t)\\, B(x_t)"
+                "\\\\[6pt]"
+                "\\text{Compact: }\\; B'(X') = \\sum_x P(X'|x)\\, B(x)"
+            ),
+        },
+        {
+            "title": "Observation Update",
+            "text": (
+                "After receiving new evidence eₜ₊₁, we reweight the predicted "
+                "belief by the likelihood of the observation. We must renormalise "
+                "(unlike the passage-of-time step). Entropy decreases."
+            ),
+            "latex": (
+                "B(X_{t+1}) \\propto_{X_{t+1}} P(e_{t+1} | X_{t+1})\\, B'(X_{t+1})"
+                "\\\\[6pt]"
+                "\\text{Full recursion: }"
+                "\\;B(X_{t+1}) = \\alpha\\, P(e_{t+1}|X_{t+1}) "
+                "\\sum_{x_t} P(X_{t+1}|x_t)\\, B(x_t)"
+            ),
         },
     ]
 
