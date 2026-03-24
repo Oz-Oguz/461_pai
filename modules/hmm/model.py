@@ -106,33 +106,29 @@ def _forward_step_latex(
     """Generate LaTeX for one forward step."""
     lines = [
         f"\\text{{Step }} t = {t + 1}, \\quad e_{{{t + 1}}} = \\text{{{obs}}}",
-        "",
-        "\\text{Predict:} \\quad B'(X_{" + str(t + 1) + "}) = \\sum_{x_" + str(t) + "} P(X_{" + str(t + 1) + "} | x_" + str(t) + "}) B(x_" + str(t) + "})",
+        f"\\text{{Predict:}} \\quad B'(X_{{{t + 1}}}) = \\sum_{{x_{{{t}}}}} P(X_{{{t + 1}}} \\mid x_{{{t}}}) B(x_{{{t}}})",
     ]
-    
+
     for i, s in enumerate(states):
         lines.append(f"B'(\\text{{{s}}}) = {predicted[i]:.4f}")
-    
+
     lines.extend([
-        "",
-        f"\\text{{Update:}} \\quad B(X_{{{t + 1}}}) \\propto P(e_{{{t + 1}}} | X_{{{t + 1}}}) B'(X_{{{t + 1}}})",
+        f"\\text{{Update:}} \\quad B(X_{{{t + 1}}}) \\propto P(e_{{{t + 1}}} \\mid X_{{{t + 1}}}) B'(X_{{{t + 1}}})",
     ])
-    
+
     for i, s in enumerate(states):
         emission_prob = emission[s][obs]
         lines.append(f"B(\\text{{{s}}}) \\propto {emission_prob:.2f} \\times {predicted[i]:.4f} = {emission_prob * predicted[i]:.4f}")
-    
+
     lines.extend([
-        "",
-        f"\\text{{Evidence:}} \\quad P(e_{{{t + 1}}} | e_{{1:{t}}}) = {evidence:.4f}",
-        "",
+        f"\\text{{Evidence:}} \\quad P(e_{{{t + 1}}} \\mid e_{{1:{t}}}) = {evidence:.4f}",
         "\\text{Normalized belief:}",
     ])
-    
+
     for i, s in enumerate(states):
         lines.append(f"B(\\text{{{s}}}) = {updated[i]:.4f}")
-    
-    return "\\\\".join(lines)
+
+    return "\\begin{gather*}" + " \\\\ ".join(lines) + "\\end{gather*}"
 
 
 # ══════════════════════════════════════════════════════════════════════
